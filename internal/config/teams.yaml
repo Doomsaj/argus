@@ -4,7 +4,7 @@
 # Placeholders, confirm with the platform team.
 shopping-discovery:
   gitlabGroup: shopping-discovery
-  githubUsers: []
+  githubUsers: [Doomsaj]   # demo approver on GitHub
 catalog:
   gitlabGroup: <pd-team-gitlab-group>
   githubUsers: []
