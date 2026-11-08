@@ -24,6 +24,8 @@ type Client struct {
 	BaseURL string // ARGUS_REGISTRY_URL, e.g. https://registry.argus.digikala.internal/apis/registry/v3
 	HTTP    *http.Client
 	Token   *TokenSource
+	// User/Password: basic auth when no OIDC is configured (Apicurio behind an authenticating proxy).
+	User, Password string
 }
 
 func New(baseURL string, ts *TokenSource) *Client {
@@ -92,6 +94,8 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
+	} else if c.User != "" {
+		req.SetBasicAuth(c.User, c.Password)
 	}
 	req.Header.Set("Accept", "application/json")
 	if in != nil {

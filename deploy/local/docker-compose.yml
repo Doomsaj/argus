@@ -51,10 +51,11 @@ services:
     environment:
       PACT_BROKER_DATABASE_URL: postgres://argus:argus@postgres:5432/pact_broker
       PACT_BROKER_DATABASE_CONNECT_MAX_RETRIES: "5"
+      # Credentials come from .env (make-env.sh); the tunnel profile makes the broker internet-reachable.
       PACT_BROKER_BASIC_AUTH_USERNAME: argus_rw
-      PACT_BROKER_BASIC_AUTH_PASSWORD: argus_rw
+      PACT_BROKER_BASIC_AUTH_PASSWORD: ${PACT_RW_PASSWORD:?run ./make-env.sh}
       PACT_BROKER_BASIC_AUTH_READ_ONLY_USERNAME: argus_ro
-      PACT_BROKER_BASIC_AUTH_READ_ONLY_PASSWORD: argus_ro
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_PASSWORD: ${PACT_RO_PASSWORD:?run ./make-env.sh}
       PACT_BROKER_ALLOW_PUBLIC_READ: "false"
       PACT_BROKER_PUBLIC_HEARTBEAT: "true"
       # No PACT_BROKER_BASE_URL: links follow the request Host, so both the host (localhost)
@@ -65,6 +66,19 @@ services:
       PACT_BROKER_WEBHOOK_HTTP_METHOD_WHITELIST: POST
       PACT_BROKER_WEBHOOK_HTTP_CODE_SUCCESS: "200..206"
       PACT_BROKER_ALLOW_DANGEROUS_CONTRACT_MODIFICATION: "false"
+
+  # profile "tunnel": Caddy on 127.0.0.1:8000 is the single entry point for GitHub-hosted runners.
+  # Expose it with ngrok on the host: ngrok http --url=<your-domain> 127.0.0.1:8000
+  caddy:
+    profiles: [tunnel]
+    image: caddy:2.10.2-alpine
+    depends_on: [apicurio, pact-broker]
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      ARGUS_REGISTRY_USERNAME: argus
+      ARGUS_REGISTRY_PASSWORD_HASH: ${ARGUS_REGISTRY_PASSWORD_HASH:?run ./make-env.sh}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
 
 volumes:
   pgdata:

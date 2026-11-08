@@ -41,7 +41,9 @@ func registryClient(env config.Env) (*registry.Client, error) {
 		return nil, err
 	}
 	if env.OIDCTokenURL == "" {
-		return registry.New(env.RegistryURL, nil), nil // local Apicurio with auth disabled
+		c := registry.New(env.RegistryURL, nil) // local Apicurio: auth disabled, or basic auth at a proxy
+		c.User, c.Password = env.RegistryUser, env.RegistryPassword
+		return c, nil
 	}
 	if err := config.Require("ARGUS_OIDC_CLIENT_ID", env.OIDCClientID, "ARGUS_OIDC_CLIENT_SECRET", env.OIDCClientSecret); err != nil {
 		return nil, err

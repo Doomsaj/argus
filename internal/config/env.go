@@ -12,6 +12,7 @@ import (
 // (tests inject Env).
 type Env struct {
 	RegistryURL, OIDCTokenURL, OIDCClientID, OIDCClientSecret string
+	RegistryUser, RegistryPassword                            string // basic auth via a reverse proxy (demo tunnel), used only without OIDC
 	BrokerURL, BrokerUser, BrokerPassword, PactBrokerCLI      string
 	GitLabToken, GitLabAPI, ProjectID, MRIID                  string
 	CommitSHA, RefName, PipelineID, BreakGlass                string
@@ -29,6 +30,7 @@ func envFrom(g func(string) string) Env {
 	e := Env{
 		RegistryURL: g("ARGUS_REGISTRY_URL"), OIDCTokenURL: g("ARGUS_OIDC_TOKEN_URL"),
 		OIDCClientID: g("ARGUS_OIDC_CLIENT_ID"), OIDCClientSecret: g("ARGUS_OIDC_CLIENT_SECRET"),
+		RegistryUser: g("ARGUS_REGISTRY_USERNAME"), RegistryPassword: g("ARGUS_REGISTRY_PASSWORD"),
 		BrokerURL: g("PACT_BROKER_BASE_URL"), BrokerUser: g("PACT_BROKER_USERNAME"), BrokerPassword: g("PACT_BROKER_PASSWORD"),
 		PactBrokerCLI: g("ARGUS_PACT_BROKER_CLI"),
 		GitLabToken:   g("ARGUS_GITLAB_TOKEN"), GitLabAPI: g("CI_API_V4_URL"), ProjectID: g("CI_PROJECT_ID"),

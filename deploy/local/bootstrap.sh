@@ -3,7 +3,8 @@
 set -euo pipefail
 R=${ARGUS_REGISTRY_URL:-http://localhost:8080/apis/registry/v3}
 B=${PACT_BROKER_BASE_URL:-http://localhost:9292}
-AUTH=(-u "${PACT_BROKER_USERNAME:-argus_rw}:${PACT_BROKER_PASSWORD:-argus_rw}")
+rw=$(grep '^PACT_RW_PASSWORD=' "$(dirname "$0")/.env" | cut -d= -f2)
+AUTH=(-u "${PACT_BROKER_USERNAME:-argus_rw}:${PACT_BROKER_PASSWORD:-$rw}")
 
 until curl -fsS -o /dev/null "$R/system/info"; do echo "waiting for apicurio"; sleep 3; done
 until curl -fsS -o /dev/null "$B/diagnostic/status/heartbeat"; do echo "waiting for pact broker"; sleep 3; done

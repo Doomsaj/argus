@@ -38,6 +38,14 @@ inputs:
   registry-url:
     description: Apicurio REST v3 base URL (ARGUS_REGISTRY_URL)
     required: true
+  registry-username:
+    description: basic-auth user for Apicurio behind an authenticating proxy (ARGUS_REGISTRY_USERNAME); empty = no auth
+    required: false
+    default: ""
+  registry-password:
+    description: basic-auth password for Apicurio (ARGUS_REGISTRY_PASSWORD)
+    required: false
+    default: ""
   broker-url:
     description: Pact Broker base URL (PACT_BROKER_BASE_URL)
     required: true
@@ -104,6 +112,8 @@ runs:
         RW: ${{ steps.when.outputs.rw }}
         VERSION_SOURCE: ${{ inputs.version-source }}
         IN_REGISTRY_URL: ${{ inputs.registry-url }}
+        IN_REGISTRY_USER: ${{ inputs.registry-username }}
+        IN_REGISTRY_PASS: ${{ inputs.registry-password }}
         IN_BROKER_URL: ${{ inputs.broker-url }}
         RO_USER: ${{ inputs.broker-username }}
         RO_PASS: ${{ inputs.broker-password }}
@@ -122,6 +132,8 @@ runs:
         echo "argus version: $version"
         {
           echo "ARGUS_REGISTRY_URL=$IN_REGISTRY_URL"
+          echo "ARGUS_REGISTRY_USERNAME=$IN_REGISTRY_USER"
+          echo "ARGUS_REGISTRY_PASSWORD=$IN_REGISTRY_PASS"
           echo "PACT_BROKER_BASE_URL=$IN_BROKER_URL"
           echo "PACT_BROKER_USERNAME=$user"
           echo "PACT_BROKER_PASSWORD=$pass"
@@ -132,6 +144,19 @@ runs:
           echo "CI_COMMIT_REF_NAME=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           echo "CI_PIPELINE_ID=$GITHUB_RUN_ID"
         } >> "$GITHUB_ENV"
+
+    - name: argus toolchain (Go for the CLI build, pact-broker CLI)
+      if: steps.when.outputs.run == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/../../../go.mod
+        cache: false
+    - name: pact-broker CLI
+      if: steps.when.outputs.run == 'true'
+      shell: bash
+      run: |
+        # Hosts without the pact standalone (e.g. GitHub-hosted runners) use the pact-cli image via docker.
+        command -v pact-broker >/dev/null || echo "$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)/deploy/local/bin" >> "$GITHUB_PATH"
 
     - name: build argus
       if: steps.when.outputs.run == 'true'

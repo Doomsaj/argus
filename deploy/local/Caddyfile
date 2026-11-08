@@ -1,0 +1,20 @@
+# Single entry point for the tunnel profile: Apicurio API behind basic auth, everything else to the
+# Pact Broker (which does its own basic auth). The Apicurio UI is not exposed.
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8000 {
+	@registry path /apis/*
+	handle @registry {
+		basic_auth {
+			{$ARGUS_REGISTRY_USERNAME} {$ARGUS_REGISTRY_PASSWORD_HASH}
+		}
+		reverse_proxy apicurio:8080
+	}
+	handle {
+		reverse_proxy pact-broker:9292
+	}
+}
