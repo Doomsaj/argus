@@ -1,0 +1,87 @@
+# argus consumer-go action (GitHub mirror of ci-templates/templates/consumer-go.yml).
+# Runs Go Pact consumer tests (build tag `pact`) on PRs and the default branch;
+# publishes ./<pact-dir> to the broker on push to the default branch only.
+name: argus consumer-go
+description: Go Pact consumer tests; pact publish on push to the default branch.
+inputs:
+  packages:
+    description: packages for the default test command
+    required: false
+    default: ./...
+  test-command:
+    description: overrides the default `go test -tags pact -run 'TestPact_' -count=1 -p 1 <packages>`
+    required: false
+    default: ""
+  pact-dir:
+    description: PactDir your tests write to, relative to the repo root
+    required: false
+    default: pacts
+  argus-skip:
+    description: 'ARGUS_SKIP "<incident-id>: <reason>"; skips tests and publish and logs an audit line'
+    required: false
+    default: ""
+  broker-url:
+    description: Pact Broker base URL (PACT_BROKER_BASE_URL)
+    required: true
+  broker-rw-username:
+    description: read-write broker user (pact publish on push to the default branch)
+    required: false
+    default: ""
+  broker-rw-password:
+    description: read-write broker password
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: argus skipped (audit)
+      if: inputs.argus-skip != ''
+      shell: bash
+      env:
+        ARGUS_SKIP: ${{ inputs.argus-skip }}
+      run: |
+        echo "$ARGUS_SKIP" | grep -Eq '^[^ ]+: .{5,}' || { echo 'ARGUS_SKIP must be "<incident-id>: <reason>"'; exit 2; }
+        echo "ARGUS_AUDIT skip repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID user=$GITHUB_ACTOR reason=$ARGUS_SKIP"
+
+    - name: pactgen workspace
+      # pkg/pactgen is not on a module proxy: point a go.work at this action's own argus checkout.
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch' && env.GOWORK == ''
+      shell: bash
+      run: |
+        grep -q 'git.digikala.com/argus/argus/pkg/pactgen' go.mod || exit 0
+        root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        printf 'go 1.26\n\nuse %s\n\nreplace git.digikala.com/argus/argus/pkg/pactgen => %s/pkg/pactgen\n' "$PWD" "$root" > "$RUNNER_TEMP/go.work"
+        echo "GOWORK=$RUNNER_TEMP/go.work" >> "$GITHUB_ENV"
+
+    - name: pact consumer tests
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch'
+      shell: bash
+      env:
+        CGO_ENABLED: "1" # pact-go v2 calls libpact_ffi through cgo
+        PACT_DIR: ${{ inputs.pact-dir }}
+        PACKAGES: ${{ inputs.packages }}
+        TEST_COMMAND: ${{ inputs.test-command }}
+      run: |
+        rm -rf "$PACT_DIR" # pact-go merges into existing files; stale interactions must go
+        if [ -n "$TEST_COMMAND" ]; then
+          bash -c "$TEST_COMMAND"
+        else
+          # PACKAGES unquoted on purpose: it may list several patterns.
+          # shellcheck disable=SC2086
+          go test -tags pact -run 'TestPact_' -count=1 -p 1 $PACKAGES
+        fi
+        ls "$PACT_DIR"/*.json # no pact files = tests did not run; fail loudly
+
+    - name: pact publish (push to default branch only)
+      if: >-
+        inputs.argus-skip == '' && github.event_name == 'push'
+        && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      shell: bash
+      env:
+        PACT_DIR: ${{ inputs.pact-dir }}
+        PACT_BROKER_BASE_URL: ${{ inputs.broker-url }}
+        PACT_BROKER_USERNAME: ${{ inputs.broker-rw-username }}
+        PACT_BROKER_PASSWORD: ${{ inputs.broker-rw-password }}
+      run: |
+        [ -n "$PACT_BROKER_USERNAME" ] || { echo "broker-rw-username is required to publish from the default branch"; exit 2; }
+        pact-broker publish "$PACT_DIR" --consumer-app-version "$GITHUB_SHA" --branch "$GITHUB_REF_NAME"

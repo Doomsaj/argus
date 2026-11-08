@@ -1,0 +1,9 @@
+# Platform policy compiled into the argus binary. Changes ship only with an argus release.
+# Raise: argus treats these as ERR regardless of the oasdiff default.
+overrides:
+  # oasdiff default INFO. Spring @JsonInclude(NON_NULL) makes most fields "optional" in the
+  # generated spec, so removing them would otherwise pass silently and Go consumers get zero values.
+  response-optional-property-removed: ERR
+# Rule ids new in the bundled oasdiff release. Forced to WARN for one argus release, then removed.
+# TestRuleInventory fails when oasdiff adds a rule that is neither in known-rules.txt nor here.
+probation: []

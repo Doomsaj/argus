@@ -1,0 +1,2 @@
+CREATE DATABASE apicurio;
+CREATE DATABASE pact_broker;

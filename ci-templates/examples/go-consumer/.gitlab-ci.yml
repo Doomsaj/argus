@@ -1,0 +1,3 @@
+include:
+  # ... existing local includes ...
+  - local: .gitlab/ci/argus.yml

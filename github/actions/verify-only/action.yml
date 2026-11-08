@@ -1,0 +1,86 @@
+# argus verify-only action (GitHub mirror of ci-templates/templates/verify-only.yml).
+# The Pact Broker webhook (contract_requiring_verification_published) sends a repository_dispatch
+# (event_type pact-verify, client_payload: pact_url, consumer_version, provider_version) to the
+# provider repo. The workflow runs on the default branch; this action checks out provider_version,
+# runs your Pact verification command and publishes the result with the RW broker user.
+# On any other event it does nothing.
+name: argus verify-only
+description: Pact provider verification for a Pact Broker webhook (repository_dispatch pact-verify).
+inputs:
+  pact-verify-command:
+    description: command that runs only your Pact provider verification test
+    required: false
+    default: ""
+  argus-skip:
+    description: 'ARGUS_SKIP "<incident-id>: <reason>"; skips verification and logs an audit line'
+    required: false
+    default: ""
+  broker-url:
+    description: Pact Broker base URL (PACT_BROKER_BASE_URL); PACT_URL must start with it
+    required: true
+  broker-rw-username:
+    description: read-write broker user (publishes verification results)
+    required: true
+  broker-rw-password:
+    description: read-write broker password
+    required: true
+  github-token:
+    description: token used to check out provider_version
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: argus skipped (audit)
+      if: inputs.argus-skip != ''
+      shell: bash
+      env:
+        ARGUS_SKIP: ${{ inputs.argus-skip }}
+      run: |
+        echo "$ARGUS_SKIP" | grep -Eq '^[^ ]+: .{5,}' || { echo 'ARGUS_SKIP must be "<incident-id>: <reason>"'; exit 2; }
+        echo "ARGUS_AUDIT skip repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID user=$GITHUB_ACTOR reason=$ARGUS_SKIP"
+
+    - name: not a pact-verify dispatch
+      if: inputs.argus-skip == '' && !(github.event_name == 'repository_dispatch' && github.event.action == 'pact-verify')
+      shell: bash
+      run: |
+        echo "argus verify-only: event is $GITHUB_EVENT_NAME, not repository_dispatch pact-verify; nothing to do"
+
+    - name: validate webhook payload, set credentials
+      if: inputs.argus-skip == '' && github.event_name == 'repository_dispatch' && github.event.action == 'pact-verify'
+      shell: bash
+      env:
+        # Values come from the Pact Broker webhook: validate before use, never inline them in the script.
+        PACT_URL: ${{ github.event.client_payload.pact_url }}
+        PACT_CONSUMER_VERSION: ${{ github.event.client_payload.consumer_version }}
+        PACT_PROVIDER_VERSION: ${{ github.event.client_payload.provider_version }}
+        BROKER_URL: ${{ inputs.broker-url }}
+        RW_USER: ${{ inputs.broker-rw-username }}
+        RW_PASS: ${{ inputs.broker-rw-password }}
+        VERIFY_COMMAND: ${{ inputs.pact-verify-command }}
+      run: |
+        echo "$PACT_PROVIDER_VERSION" | grep -Eq '^[0-9a-f]{40}$' || { echo "provider_version must be a full SHA"; exit 2; }
+        case "$PACT_URL" in "$BROKER_URL"/*) ;; *) echo "pact_url must point at broker-url"; exit 2;; esac
+        [ -n "$VERIFY_COMMAND" ] || { echo "set input pact-verify-command (see github/README.md)"; exit 2; }
+        {
+          echo "PACT_BROKER_BASE_URL=$BROKER_URL"
+          echo "PACT_BROKER_USERNAME=$RW_USER"
+          echo "PACT_BROKER_PASSWORD=$RW_PASS"
+          echo "PACT_URL=$PACT_URL"
+          echo "PACT_CONSUMER_VERSION=$PACT_CONSUMER_VERSION"
+          echo "PACT_PROVIDER_VERSION=$PACT_PROVIDER_VERSION"
+          echo "ARGUS_VERIFY_ONLY=true"
+          echo "ARGUS_PACT_PUBLISH=true"
+        } >> "$GITHUB_ENV"
+
+    - name: check out provider_version
+      if: inputs.argus-skip == '' && github.event_name == 'repository_dispatch' && github.event.action == 'pact-verify'
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ env.PACT_PROVIDER_VERSION }}
+        token: ${{ inputs.github-token }}
+
+    - name: pact verification
+      if: inputs.argus-skip == '' && github.event_name == 'repository_dispatch' && github.event.action == 'pact-verify'
+      shell: bash
+      run: ${{ inputs.pact-verify-command }}

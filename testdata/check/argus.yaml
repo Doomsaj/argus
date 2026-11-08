@@ -1,0 +1,11 @@
+service: product-detail
+group: catalog
+role: [provider]
+spec: {path: testdata/check/base.yaml, generator: springdoc}
+gate: {mode: block}
+waivers:
+  - rule: response-property-type-generalized
+    path: "POST /v1/products/ 200 /items/selling_price"
+    reason: "coordinated migration, consumers updated"
+    approvedBy: shopping-discovery
+    expires: 2026-11-20

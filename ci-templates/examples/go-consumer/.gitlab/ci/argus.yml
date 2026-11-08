@@ -1,0 +1,32 @@
+include:
+  - component: git.digikala.com/argus/ci-templates/consumer-go@1.0.0
+    inputs:
+      stage: test
+      golang_pact_image: artifactory.digikala.com/argus/golang-pact:1.26
+      packages: ./modules/application/internal/product/...
+  - component: git.digikala.com/argus/ci-templates/deploy-gate@1.0.0
+    inputs:
+      environment: production
+      mode: release-mr          # argo-revision: the release MR develop -> main is the deploy
+      deploy_branch: main       # = $PROD_BRANCH
+      record_after: verify_rollout
+
+# marcopolo runners
+argus-pact-consumer:
+  tags: [discovery]
+argus-pact-publish:
+  tags: [discovery]
+argus-can-i-deploy:
+  tags: [discovery]
+argus-deploy-record:
+  tags: [discovery]
+
+# writeback mode: gate the promotion in the main pipeline as well.
+argus-can-i-deploy-writeback:
+  extends: .argus-can-i-deploy
+  tags: [discovery]
+  needs: []
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $PROD_BRANCH && $IMAGE_TAG_DELIVERY == "writeback"'

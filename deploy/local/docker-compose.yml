@@ -1,0 +1,70 @@
+# Local argus platform for demos and development. Not for production: see docs/04 and docs/05.
+# One Postgres with two databases (apicurio, pact_broker) to keep the footprint small.
+name: argus-local
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "argus"]
+      interval: 5s
+      retries: 20
+
+  apicurio:
+    image: apicurio/apicurio-registry:3.3.3
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["8080:8080"]
+    environment:
+      APICURIO_STORAGE_KIND: sql
+      APICURIO_STORAGE_SQL_KIND: postgresql
+      APICURIO_DATASOURCE_URL: jdbc:postgresql://postgres:5432/apicurio
+      APICURIO_DATASOURCE_USERNAME: argus
+      APICURIO_DATASOURCE_PASSWORD: argus
+      APICURIO_DATASOURCE_JDBC_INITIAL_SIZE: "2"
+      APICURIO_DATASOURCE_JDBC_MIN_SIZE: "2"
+      APICURIO_DATASOURCE_JDBC_MAX_SIZE: "10"
+      # Auth is off locally (docs/04 section 6 for OIDC). Versions stay immutable as in production.
+      APICURIO_REST_DELETION_ARTIFACT_VERSION_ENABLED: "false"
+      APICURIO_REST_MUTABILITY_ARTIFACT_VERSION_CONTENT_ENABLED: "false"
+      QUARKUS_HTTP_CORS_ORIGINS: http://localhost:8888
+      JAVA_OPTS_APPEND: -Xms128m -Xmx512m
+
+  apicurio-ui:
+    image: apicurio/apicurio-registry-ui:3.3.3
+    depends_on: [apicurio]
+    ports: ["8888:8080"]
+    environment:
+      REGISTRY_API_URL: http://localhost:8080/apis/registry/v3
+
+  pact-broker:
+    image: pactfoundation/pact-broker:3.0.0-pactbroker2.121.2
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["9292:9292"]
+    environment:
+      PACT_BROKER_DATABASE_URL: postgres://argus:argus@postgres:5432/pact_broker
+      PACT_BROKER_DATABASE_CONNECT_MAX_RETRIES: "5"
+      PACT_BROKER_BASIC_AUTH_USERNAME: argus_rw
+      PACT_BROKER_BASIC_AUTH_PASSWORD: argus_rw
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_USERNAME: argus_ro
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_PASSWORD: argus_ro
+      PACT_BROKER_ALLOW_PUBLIC_READ: "false"
+      PACT_BROKER_PUBLIC_HEARTBEAT: "true"
+      # No PACT_BROKER_BASE_URL: links follow the request Host, so both the host (localhost)
+      # and containers (host.docker.internal) can follow them.
+      # Webhooks may only call the GitHub API (repository_dispatch) in this demo; production allows GitLab only.
+      PACT_BROKER_WEBHOOK_HOST_WHITELIST: api.github.com
+      PACT_BROKER_WEBHOOK_SCHEME_WHITELIST: https
+      PACT_BROKER_WEBHOOK_HTTP_METHOD_WHITELIST: POST
+      PACT_BROKER_WEBHOOK_HTTP_CODE_SUCCESS: "200..206"
+      PACT_BROKER_ALLOW_DANGEROUS_CONTRACT_MODIFICATION: "false"
+
+volumes:
+  pgdata:

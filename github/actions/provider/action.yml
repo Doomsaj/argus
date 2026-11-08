@@ -1,0 +1,134 @@
+# argus provider action (GitHub mirror of ci-templates/templates/provider.yml).
+# PRs and pushes to the default branch: spec lint, spec check, verify samples.
+# Push to the default branch only: spec publish.
+# The webhook verify-only path is the separate verify-only action (its own workflow on
+# repository_dispatch); this action does nothing on repository_dispatch.
+name: argus provider
+description: argus spec lint/check/samples on PRs and the default branch; spec publish on the default branch.
+inputs:
+  spec-command:
+    description: >
+      Optional "spec generate" hook (GitLab spec_job): command that writes spec-path and samples-dir and
+      runs your Pact verification. It runs with PACT_BROKER_* and ARGUS_PACT_PUBLISH set. Leave empty if an
+      earlier step already produced the files.
+    required: false
+    default: ""
+  spec-path:
+    description: must match spec.path in argus.yaml
+    required: false
+    default: target/openapi.json
+  samples-dir:
+    description: where your tests dump <operationId>/<n>.json
+    required: false
+    default: target/argus-samples
+  against:
+    description: baseline branch for argus spec check (production, staging, main)
+    required: false
+    default: production
+  argus-skip:
+    description: 'ARGUS_SKIP "<incident-id>: <reason>"; skips every argus step and logs an audit line'
+    required: false
+    default: ""
+  registry-url:
+    description: Apicurio REST v3 base URL (ARGUS_REGISTRY_URL)
+    required: true
+  broker-url:
+    description: Pact Broker base URL (PACT_BROKER_BASE_URL)
+    required: true
+  broker-username:
+    description: read-only broker user (used on PRs)
+    required: true
+  broker-password:
+    description: read-only broker password
+    required: true
+  broker-rw-username:
+    description: read-write broker user (used only on push to the default branch)
+    required: false
+    default: ""
+  broker-rw-password:
+    description: read-write broker password
+    required: false
+    default: ""
+  github-token:
+    description: token exported as ARGUS_GITHUB_TOKEN (report/audit notes)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: argus skipped (audit)
+      if: inputs.argus-skip != ''
+      shell: bash
+      env:
+        ARGUS_SKIP: ${{ inputs.argus-skip }}
+      run: |
+        echo "$ARGUS_SKIP" | grep -Eq '^[^ ]+: .{5,}' || { echo 'ARGUS_SKIP must be "<incident-id>: <reason>"'; exit 2; }
+        echo "ARGUS_AUDIT skip repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID user=$GITHUB_ACTOR reason=$ARGUS_SKIP"
+
+    - name: argus credentials (RO on PRs, RW on push to the default branch)
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch'
+      shell: bash
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        IN_REGISTRY_URL: ${{ inputs.registry-url }}
+        IN_BROKER_URL: ${{ inputs.broker-url }}
+        RO_USER: ${{ inputs.broker-username }}
+        RO_PASS: ${{ inputs.broker-password }}
+        RW_USER: ${{ inputs.broker-rw-username }}
+        RW_PASS: ${{ inputs.broker-rw-password }}
+        IN_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        publish=false user="$RO_USER" pass="$RO_PASS"
+        if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+          publish=true
+          if [ -n "$RW_USER" ]; then user="$RW_USER" pass="$RW_PASS"; fi
+        fi
+        {
+          echo "ARGUS_REGISTRY_URL=$IN_REGISTRY_URL"
+          echo "PACT_BROKER_BASE_URL=$IN_BROKER_URL"
+          echo "PACT_BROKER_USERNAME=$user"
+          echo "PACT_BROKER_PASSWORD=$pass"
+          echo "ARGUS_PACT_PUBLISH=$publish"
+          echo "ARGUS_GITHUB_TOKEN=$IN_GITHUB_TOKEN"
+          # The CLI reads GitLab predefined names (docs/06 section 5.2).
+          echo "CI_COMMIT_SHA=$GITHUB_SHA"
+          echo "CI_COMMIT_REF_NAME=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          echo "CI_PIPELINE_ID=$GITHUB_RUN_ID"
+        } >> "$GITHUB_ENV"
+
+    - name: build argus
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: go build -o "$RUNNER_TEMP/argus" ./cmd/argus
+
+    - name: spec generate hook
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch' && inputs.spec-command != ''
+      shell: bash
+      run: ${{ inputs.spec-command }}
+
+    - name: argus spec lint / spec check / verify samples
+      if: inputs.argus-skip == '' && github.event_name != 'repository_dispatch'
+      shell: bash
+      env:
+        SPEC: ${{ inputs.spec-path }}
+        SAMPLES: ${{ inputs.samples-dir }}
+        AGAINST: ${{ inputs.against }}
+      run: |
+        # Run all three like the parallel GitLab jobs; fail with the highest exit code.
+        rc=0
+        run() { "$RUNNER_TEMP/argus" "$@" || { r=$?; if [ "$r" -gt "$rc" ]; then rc=$r; fi; }; }
+        run spec lint "$SPEC"
+        run spec check "$SPEC" --against "$AGAINST"
+        run verify samples --spec "$SPEC" --dir "$SAMPLES"
+        if [ -f argus-report.md ]; then cat argus-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+        exit $rc
+
+    - name: argus spec publish (push to default branch only)
+      if: >-
+        inputs.argus-skip == '' && github.event_name == 'push'
+        && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      shell: bash
+      env:
+        SPEC: ${{ inputs.spec-path }}
+      run: '"$RUNNER_TEMP/argus" spec publish "$SPEC" --branch main'

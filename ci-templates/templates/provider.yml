@@ -1,0 +1,146 @@
+# argus provider component: spec lint/check/samples on MRs and the default branch,
+# spec publish on the default branch, verification-only job for Pact webhooks.
+spec:
+  inputs:
+    argus_image:
+      default: artifactory.digikala.com/argus/argus-cli:1.0.0
+      description: argus CLI image; pinned per template release
+    stage:
+      default: test
+      description: stage for lint, check, samples and publish
+    spec_job:
+      description: your job whose artifacts contain the spec and the samples dir (it is the "spec generate" hook)
+    spec_path:
+      default: target/openapi.json
+    samples_dir:
+      default: target/argus-samples
+    against:
+      default: production
+      options: [production, staging, main]
+    pact_verify_image:
+      default: artifactory.digikala.com/docker/debian:bookworm-slim
+      description: image for argus-pact-verify-only (your build image, e.g. maven)
+    pact_verify_command:
+      default: ""
+      description: command that runs only the Pact provider verification test
+---
+# Credentials: map RO/RW source variables to the names argus and pact-broker read.
+# Protected refs get RW (falls back to RO if the RW value is not visible), everything else RO.
+# ARGUS_PACT_PUBLISH: provider verification results are published only from the default
+# branch and webhook verify-only pipelines.
+.argus-credentials:
+  before_script:
+    - |
+      if [ "$CI_COMMIT_REF_PROTECTED" = "true" ] && [ -n "$ARGUS_RW_OIDC_CLIENT_ID" ]; then
+        export ARGUS_OIDC_CLIENT_ID="$ARGUS_RW_OIDC_CLIENT_ID" ARGUS_OIDC_CLIENT_SECRET="$ARGUS_RW_OIDC_CLIENT_SECRET"
+        export PACT_BROKER_USERNAME="$ARGUS_RW_PACT_BROKER_USERNAME" PACT_BROKER_PASSWORD="$ARGUS_RW_PACT_BROKER_PASSWORD"
+      else
+        export ARGUS_OIDC_CLIENT_ID="$ARGUS_RO_OIDC_CLIENT_ID" ARGUS_OIDC_CLIENT_SECRET="$ARGUS_RO_OIDC_CLIENT_SECRET"
+        export PACT_BROKER_USERNAME="$ARGUS_RO_PACT_BROKER_USERNAME" PACT_BROKER_PASSWORD="$ARGUS_RO_PACT_BROKER_PASSWORD"
+      fi
+      export ARGUS_PACT_PUBLISH=false
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] || [ "$ARGUS_VERIFY_ONLY" = "true" ]; then
+        export ARGUS_PACT_PUBLISH=true
+      fi
+
+# Add to your own jobs' rules so they do not run in webhook verify-only pipelines:
+#   rules:
+#     - !reference [.argus-rules-skip-verify-only, rules]
+#     - <your rules>
+.argus-rules-skip-verify-only:
+  rules:
+    - if: $ARGUS_VERIFY_ONLY == "true"
+      when: never
+
+.argus-provider-job:
+  image: $[[ inputs.argus_image ]]
+  stage: $[[ inputs.stage ]]
+  extends: .argus-credentials
+  needs:
+    - job: $[[ inputs.spec_job ]]
+      artifacts: true
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: $ARGUS_VERIFY_ONLY == "true"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  interruptible: true
+
+argus-spec-lint:
+  extends: .argus-provider-job
+  script:
+    - argus spec lint "$[[ inputs.spec_path ]]"
+
+argus-spec-check:
+  extends: .argus-provider-job
+  script:
+    - argus spec check "$[[ inputs.spec_path ]]" --against "$[[ inputs.against ]]"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - argus-report.md
+      - argus-report.junit.xml
+    reports:
+      junit: argus-report.junit.xml
+
+argus-verify-samples:
+  extends: .argus-provider-job
+  script:
+    - argus verify samples --spec "$[[ inputs.spec_path ]]" --dir "$[[ inputs.samples_dir ]]"
+
+argus-spec-publish:
+  extends: .argus-provider-job
+  needs:
+    - job: $[[ inputs.spec_job ]]
+      artifacts: true
+    - argus-spec-lint
+    - argus-spec-check
+    - argus-verify-samples
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: $ARGUS_VERIFY_ONLY == "true"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_REF_PROTECTED == "true"
+  resource_group: argus-spec-publish
+  retry:
+    max: 2
+    when: [runner_system_failure, stuck_or_timeout_failure, script_failure]
+  script:
+    - argus spec publish "$[[ inputs.spec_path ]]" --branch main
+
+# Identical to templates/verify-only.yml (CI of argus/ci-templates diffs the two).
+argus-pact-verify-only:
+  image: $[[ inputs.pact_verify_image ]]
+  stage: $[[ inputs.stage ]]
+  extends: .argus-credentials
+  needs: []
+  variables:
+    GIT_DEPTH: "0" # PACT_PROVIDER_VERSION can be any deployed commit, not only the branch tip
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: $ARGUS_VERIFY_ONLY == "true" && $CI_PIPELINE_SOURCE == "trigger" && $CI_COMMIT_REF_PROTECTED == "true"
+  script:
+    - |
+      # Values come from the Pact Broker webhook: validate before use.
+      echo "$PACT_PROVIDER_VERSION" | grep -Eq '^[0-9a-f]{40}$' || { echo "PACT_PROVIDER_VERSION must be a full SHA"; exit 2; }
+      case "$PACT_URL" in "$PACT_BROKER_BASE_URL"/*) ;; *) echo "PACT_URL must point at PACT_BROKER_BASE_URL"; exit 2;; esac
+      [ -n "$[[ inputs.pact_verify_command ]]" ] || { echo "set inputs.pact_verify_command (see 07-ci-templates.md)"; exit 2; }
+      git checkout --detach "$PACT_PROVIDER_VERSION"
+      $[[ inputs.pact_verify_command ]]
+
+# Break-glass trail when the argus image cannot be pulled: ARGUS_SKIP="<incident-id>: <reason>".
+argus-skipped:
+  image: artifactory.digikala.com/docker/debian:bookworm-slim
+  stage: $[[ inputs.stage ]]
+  needs: []
+  rules:
+    - if: $ARGUS_SKIP
+  script:
+    - |
+      echo "$ARGUS_SKIP" | grep -Eq '^[^ ]+: .{5,}' || { echo 'ARGUS_SKIP must be "<incident-id>: <reason>"'; exit 2; }
+      echo "ARGUS_AUDIT skip project=$CI_PROJECT_PATH sha=$CI_COMMIT_SHA pipeline=$CI_PIPELINE_URL user=$GITLAB_USER_LOGIN reason=$ARGUS_SKIP"

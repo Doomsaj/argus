@@ -1,0 +1,53 @@
+stages: [build, test, deploy]
+
+include:
+  - component: git.digikala.com/argus/ci-templates/provider@1.0.0
+    inputs:
+      spec_job: build
+      spec_path: target/openapi.json
+      pact_verify_image: artifactory.digikala.com/docker/php:8.3-cli   # with ext-ffi for pact-php
+      pact_verify_command: >-
+        composer install --no-interaction --prefer-dist &&
+        vendor/bin/phpunit --filter PactVerificationTest
+  - component: git.digikala.com/argus/ci-templates/deploy-gate@1.0.0
+    inputs: { record_after: deploy-production }
+
+build:
+  stage: build
+  image: artifactory.digikala.com/docker/php:8.3-cli
+  services: [artifactory.digikala.com/docker/mysql:8.0]   # Scramble reads column types from migrated DB
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  cache:
+    key: { files: [composer.lock] }
+    paths: [vendor/]
+  before_script:
+    - !reference [.argus-credentials, before_script]
+  script:
+    - composer install --no-interaction --prefer-dist
+    - php artisan migrate --force
+    - mkdir -p target
+    - php artisan scramble:analyze --fail-on-unknown        # unknown types fail the build
+    - php artisan scramble:export --path=target/openapi.json
+    - php artisan test                                      # feature tests record target/argus-samples/
+    - vendor/bin/phpunit --filter PactVerificationTest      # reads ARGUS_PACT_PUBLISH
+  artifacts:
+    when: always
+    paths: [target/openapi.json, target/argus-samples/]
+
+# Not in docs/07 section 9: deploy-gate's record_after needs a job with this name.
+deploy-production:
+  stage: deploy
+  needs:
+    - build
+    - job: argus-spec-publish
+      optional: true
+    - job: argus-can-i-deploy
+      optional: true          # absent only when ARGUS_SKIP is set
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - ./deploy.sh production  # Helm / Argo CD promotion, then wait for healthy rollout

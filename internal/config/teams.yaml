@@ -1,0 +1,13 @@
+# argus team slug -> approvers of waivers that name this team in approvedBy.
+#   gitlabGroup: GitLab group full path; any (inherited) member's MR approval counts.
+#   githubUsers: GitHub logins; an APPROVED PR review from any of them counts (no GitHub teams needed).
+# Placeholders, confirm with the platform team.
+shopping-discovery:
+  gitlabGroup: shopping-discovery
+  githubUsers: []
+catalog:
+  gitlabGroup: <pd-team-gitlab-group>
+  githubUsers: []
+argus-platform:
+  gitlabGroup: argus
+  githubUsers: []

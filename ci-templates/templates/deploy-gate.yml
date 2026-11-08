@@ -1,0 +1,88 @@
+# argus deploy-gate component: can-i-deploy before a deploy, deploy record after rollout.
+spec:
+  inputs:
+    argus_image:
+      default: artifactory.digikala.com/argus/argus-cli:1.0.0
+    environment:
+      default: production
+      options: [staging, production]
+    mode:
+      default: pipeline
+      options: [pipeline, release-mr]
+      description: >
+        pipeline   = gate runs in the deploy pipeline before your deploy/promote job.
+        release-mr = gate runs as a blocking job on the release MR into deploy_branch
+                     ("Pipelines must succeed"), for deploys the pipeline does not perform (Argo CD revision tracking).
+    deploy_branch:
+      default: main
+      description: branch whose pipeline deploys (or whose MR is the release MR)
+    stage:
+      default: deploy
+    record_after:
+      default: verify_rollout
+      description: job that proves the rollout is healthy; deploy record needs it
+    version_source:
+      default: merge-parent
+      options: [commit, merge-parent]
+      description: merge-parent = if HEAD is a merge commit, use its second parent (the commit the pacts were published for)
+---
+variables:
+  ARGUS_GATE_MODE: $[[ inputs.mode ]]
+  ARGUS_DEPLOY_BRANCH: $[[ inputs.deploy_branch ]]
+
+.argus-deploy-base:
+  image: $[[ inputs.argus_image ]]
+  stage: $[[ inputs.stage ]]
+  variables:
+    ARGUS_ENV: $[[ inputs.environment ]]
+    GIT_DEPTH: "10" # merge-parent needs HEAD^2
+  before_script:
+    - |
+      if [ "$CI_COMMIT_REF_PROTECTED" = "true" ] && [ -n "$ARGUS_RW_OIDC_CLIENT_ID" ]; then
+        export ARGUS_OIDC_CLIENT_ID="$ARGUS_RW_OIDC_CLIENT_ID" ARGUS_OIDC_CLIENT_SECRET="$ARGUS_RW_OIDC_CLIENT_SECRET"
+        export PACT_BROKER_USERNAME="$ARGUS_RW_PACT_BROKER_USERNAME" PACT_BROKER_PASSWORD="$ARGUS_RW_PACT_BROKER_PASSWORD"
+      else
+        export ARGUS_OIDC_CLIENT_ID="$ARGUS_RO_OIDC_CLIENT_ID" ARGUS_OIDC_CLIENT_SECRET="$ARGUS_RO_OIDC_CLIENT_SECRET"
+        export PACT_BROKER_USERNAME="$ARGUS_RO_PACT_BROKER_USERNAME" PACT_BROKER_PASSWORD="$ARGUS_RO_PACT_BROKER_PASSWORD"
+      fi
+      ARGUS_VERSION="$CI_COMMIT_SHA"
+      if [ "$[[ inputs.version_source ]]" = "merge-parent" ] && git rev-parse -q --verify HEAD^2 >/dev/null; then
+        ARGUS_VERSION="$(git rev-parse HEAD^2)"
+      fi
+      export ARGUS_VERSION
+      echo "argus version for $ARGUS_ENV: $ARGUS_VERSION"
+
+# Reusable for a second environment or custom rules: extends + set ARGUS_ENV.
+.argus-can-i-deploy:
+  extends: .argus-deploy-base
+  script:
+    - argus can-i-deploy --to "$ARGUS_ENV" --version "$ARGUS_VERSION"
+
+.argus-deploy-record:
+  extends: .argus-deploy-base
+  allow_failure: true # the rollout already happened; nightly reconcile catches a missed record
+  retry: 2
+  script:
+    - argus deploy record --env "$ARGUS_ENV" --version "$ARGUS_VERSION"
+
+argus-can-i-deploy:
+  extends: .argus-can-i-deploy
+  needs: []
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: $ARGUS_VERIFY_ONLY == "true"
+      when: never
+    - if: $ARGUS_GATE_MODE == "release-mr" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $ARGUS_DEPLOY_BRANCH
+    - if: $ARGUS_GATE_MODE == "pipeline" && $CI_COMMIT_BRANCH == $ARGUS_DEPLOY_BRANCH
+
+argus-deploy-record:
+  extends: .argus-deploy-record
+  needs:
+    - job: $[[ inputs.record_after ]]
+  rules:
+    - if: $ARGUS_SKIP
+      when: never
+    - if: $ARGUS_VERIFY_ONLY == "true"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $ARGUS_DEPLOY_BRANCH

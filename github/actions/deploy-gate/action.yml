@@ -1,0 +1,162 @@
+# argus deploy-gate action (GitHub mirror of ci-templates/templates/deploy-gate.yml).
+# command: can-i-deploy -> argus can-i-deploy --to <environment> (before your deploy step)
+# command: deploy-record -> argus deploy record --env <environment> (after your rollout is healthy)
+# mode pipeline:   can-i-deploy runs on push/workflow_dispatch to deploy-branch.
+# mode release-mr: can-i-deploy runs on pull_request into deploy-branch (make it a required check).
+# deploy-record runs on push/workflow_dispatch to deploy-branch in both modes.
+# On any other event the step does nothing.
+name: argus deploy-gate
+description: argus can-i-deploy before a deploy, argus deploy record after rollout.
+inputs:
+  command:
+    description: can-i-deploy or deploy-record (replaces GitLab's job names / record_after)
+    required: true
+  environment:
+    description: staging or production
+    required: false
+    default: production
+  mode:
+    description: pipeline or release-mr
+    required: false
+    default: pipeline
+  deploy-branch:
+    description: branch whose pushes deploy, or the base branch of the release PR
+    required: false
+    default: main
+  version-source:
+    description: merge-parent (if HEAD is a merge commit use HEAD^2) or commit (always the checked-out SHA)
+    required: false
+    default: merge-parent
+  break-glass:
+    description: 'ARGUS_BREAK_GLASS "<incident-id>: <reason>"; can-i-deploy prints the verdict and exits 0'
+    required: false
+    default: ""
+  argus-skip:
+    description: 'ARGUS_SKIP "<incident-id>: <reason>"; skips the gate and logs an audit line'
+    required: false
+    default: ""
+  registry-url:
+    description: Apicurio REST v3 base URL (ARGUS_REGISTRY_URL)
+    required: true
+  broker-url:
+    description: Pact Broker base URL (PACT_BROKER_BASE_URL)
+    required: true
+  broker-username:
+    description: read-only broker user (PRs)
+    required: true
+  broker-password:
+    description: read-only broker password
+    required: true
+  broker-rw-username:
+    description: read-write broker user (push/workflow_dispatch on deploy-branch; needed by deploy-record)
+    required: false
+    default: ""
+  broker-rw-password:
+    description: read-write broker password
+    required: false
+    default: ""
+  github-token:
+    description: token exported as ARGUS_GITHUB_TOKEN (break-glass audit note)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: argus skipped (audit)
+      if: inputs.argus-skip != ''
+      shell: bash
+      env:
+        ARGUS_SKIP: ${{ inputs.argus-skip }}
+      run: |
+        echo "$ARGUS_SKIP" | grep -Eq '^[^ ]+: .{5,}' || { echo 'ARGUS_SKIP must be "<incident-id>: <reason>"'; exit 2; }
+        echo "ARGUS_AUDIT skip repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID user=$GITHUB_ACTOR reason=$ARGUS_SKIP"
+
+    - name: decide whether the gate runs
+      id: when
+      if: inputs.argus-skip == ''
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+        MODE: ${{ inputs.mode }}
+        DEPLOY_BRANCH: ${{ inputs.deploy-branch }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        case "$COMMAND" in can-i-deploy|deploy-record) ;; *) echo "command must be can-i-deploy or deploy-record"; exit 2;; esac
+        case "$MODE" in pipeline|release-mr) ;; *) echo "mode must be pipeline or release-mr"; exit 2;; esac
+        on_branch=false
+        case "$GITHUB_EVENT_NAME" in push|workflow_dispatch)
+          [ "$GITHUB_REF" = "refs/heads/$DEPLOY_BRANCH" ] && on_branch=true ;;
+        esac
+        run=false
+        if [ "$COMMAND" = deploy-record ] || [ "$MODE" = pipeline ]; then
+          run=$on_branch
+        elif [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$BASE_REF" = "$DEPLOY_BRANCH" ]; then
+          run=true
+        fi
+        [ "$run" = true ] || echo "argus $COMMAND: not a $MODE deploy event for $DEPLOY_BRANCH; nothing to do"
+        echo "run=$run" >> "$GITHUB_OUTPUT"
+        echo "rw=$on_branch" >> "$GITHUB_OUTPUT"
+
+    - name: argus credentials and version
+      if: steps.when.outputs.run == 'true'
+      shell: bash
+      env:
+        RW: ${{ steps.when.outputs.rw }}
+        VERSION_SOURCE: ${{ inputs.version-source }}
+        IN_REGISTRY_URL: ${{ inputs.registry-url }}
+        IN_BROKER_URL: ${{ inputs.broker-url }}
+        RO_USER: ${{ inputs.broker-username }}
+        RO_PASS: ${{ inputs.broker-password }}
+        RW_USER: ${{ inputs.broker-rw-username }}
+        RW_PASS: ${{ inputs.broker-rw-password }}
+        IN_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        user="$RO_USER" pass="$RO_PASS"
+        if [ "$RW" = true ] && [ -n "$RW_USER" ]; then user="$RW_USER" pass="$RW_PASS"; fi
+        version="$(git rev-parse HEAD)"
+        if [ "$VERSION_SOURCE" = merge-parent ]; then
+          # merge-parent needs HEAD^2; a depth-1 checkout does not have it.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch -q --no-tags --depth=2 origin "$version"; fi
+          if git rev-parse -q --verify 'HEAD^2' >/dev/null; then version="$(git rev-parse 'HEAD^2')"; fi
+        fi
+        echo "argus version: $version"
+        {
+          echo "ARGUS_REGISTRY_URL=$IN_REGISTRY_URL"
+          echo "PACT_BROKER_BASE_URL=$IN_BROKER_URL"
+          echo "PACT_BROKER_USERNAME=$user"
+          echo "PACT_BROKER_PASSWORD=$pass"
+          echo "ARGUS_GITHUB_TOKEN=$IN_GITHUB_TOKEN"
+          echo "ARGUS_VERSION=$version"
+          # The CLI reads GitLab predefined names (docs/06 section 5.2).
+          echo "CI_COMMIT_SHA=$version"
+          echo "CI_COMMIT_REF_NAME=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          echo "CI_PIPELINE_ID=$GITHUB_RUN_ID"
+        } >> "$GITHUB_ENV"
+
+    - name: build argus
+      if: steps.when.outputs.run == 'true'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../../..
+      run: go build -o "$RUNNER_TEMP/argus" ./cmd/argus
+
+    - name: argus can-i-deploy
+      if: steps.when.outputs.run == 'true' && inputs.command == 'can-i-deploy'
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        ARGUS_BREAK_GLASS: ${{ inputs.break-glass }}
+      run: '"$RUNNER_TEMP/argus" can-i-deploy --to "$ENVIRONMENT" --version "$ARGUS_VERSION"'
+
+    - name: argus deploy record
+      if: steps.when.outputs.run == 'true' && inputs.command == 'deploy-record'
+      # The rollout already happened; nightly reconcile catches a missed record.
+      continue-on-error: true
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        for i in 1 2 3; do
+          "$RUNNER_TEMP/argus" deploy record --env "$ENVIRONMENT" --version "$ARGUS_VERSION" && exit 0
+          [ "$i" = 3 ] || sleep 10
+        done
+        exit 1

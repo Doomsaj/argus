@@ -1,0 +1,7 @@
+dist/
+argus-report.md
+argus-report.junit.xml
+reconcile-report.*
+.DS_Store
+docs/
+presentation/

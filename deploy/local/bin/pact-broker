@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# pact-broker CLI via the pact-cli image, for hosts without the pact standalone. localhost maps to the host.
+args=(); for a in "$@"; do args+=("${a//localhost/host.docker.internal}"); done
+exec docker run --rm -e PACT_BROKER_BASE_URL="${PACT_BROKER_BASE_URL/localhost/host.docker.internal}" -e PACT_BROKER_USERNAME -e PACT_BROKER_PASSWORD -v "$PWD:$PWD" -w "$PWD" pactfoundation/pact-cli@sha256:72f1df83a7c42abd02e69a0fa21c3adc037d72c2852daa9f2910bb35617b207b pact-broker "${args[@]}"

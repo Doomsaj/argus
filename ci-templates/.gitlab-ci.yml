@@ -1,0 +1,35 @@
+# .gitlab-ci.yml of argus/ci-templates (sketch)
+stages: [lint, test, release]
+
+lint-templates:
+  stage: lint
+  image: artifactory.digikala.com/docker/alpine:3.20
+  script:
+    - apk add --no-cache curl jq diffutils
+    # The argus-pact-verify-only job must be identical in provider.yml and verify-only.yml.
+    - sed -n '/^argus-pact-verify-only:/,/^# Break-glass/p' templates/provider.yml | sed '$d' > /tmp/a.yml
+    - sed -n '/^argus-pact-verify-only:/,$p' templates/verify-only.yml > /tmp/b.yml
+    - diff -B /tmp/a.yml /tmp/b.yml
+    # Validate each example project's merged config with the CI Lint API (resolves includes + inputs).
+    - |
+      for p in examples/*/; do
+        jq -n --rawfile c "$p/.gitlab-ci.yml" '{content: $c}' |
+          curl -fsS --header "PRIVATE-TOKEN: $LINT_TOKEN" --header 'Content-Type: application/json' \
+            --data @- "$CI_API_V4_URL/projects/$CI_PROJECT_ID/ci/lint" | jq -e '.valid'
+      done
+
+example-pipelines:
+  stage: test
+  trigger:
+    project: argus/ci-templates-examples   # runs the example projects against the MR's templates
+    strategy: depend
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest   # mirror in Artifactory; pin a version
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+$/
+  script: [echo "release $CI_COMMIT_TAG"]
+  release:
+    tag_name: $CI_COMMIT_TAG
+    description: CHANGELOG.md

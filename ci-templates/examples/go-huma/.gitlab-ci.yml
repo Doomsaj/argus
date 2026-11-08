@@ -1,0 +1,49 @@
+stages: [build, test, deploy]
+
+include:
+  - component: git.digikala.com/argus/ci-templates/provider@1.0.0
+    inputs:
+      spec_job: build
+      pact_verify_image: artifactory.digikala.com/argus/golang-pact:1.26
+      pact_verify_command: CGO_ENABLED=1 go test -tags pact -run TestPactProvider -count=1 ./internal/api/...
+  - component: git.digikala.com/argus/ci-templates/deploy-gate@1.0.0
+    inputs: { record_after: deploy-production }
+
+build:
+  stage: build
+  image: artifactory.digikala.com/argus/golang-pact:1.26      # Debian + libpact_ffi, CGO
+  variables:
+    CGO_ENABLED: "1"
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/go-mod
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  cache:
+    key: { files: [go.sum] }
+    paths: [.cache/go-mod]
+  before_script:
+    - !reference [.argus-credentials, before_script]
+  script:
+    - mkdir -p target
+    - go run ./cmd/openapi > target/openapi.json             # prints api.OpenAPI() of the huma API
+    - go test ./...                                          # handler tests record target/argus-samples/
+    - go test -tags pact -run TestPactProvider -count=1 ./internal/api/...
+  artifacts:
+    when: always
+    paths: [target/openapi.json, target/argus-samples/]
+
+# Not in docs/07 section 9: deploy-gate's record_after needs a job with this name.
+deploy-production:
+  stage: deploy
+  needs:
+    - build
+    - job: argus-spec-publish
+      optional: true
+    - job: argus-can-i-deploy
+      optional: true          # absent only when ARGUS_SKIP is set
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - ./deploy.sh production  # Helm / Argo CD promotion, then wait for healthy rollout

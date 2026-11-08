@@ -1,0 +1,6 @@
+promote_image:
+  needs:
+    - job: package_image
+      optional: true
+    - job: argus-can-i-deploy-writeback
+      optional: true            # absent in argo-revision mode and with ARGUS_SKIP

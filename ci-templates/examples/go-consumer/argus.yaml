@@ -1,0 +1,7 @@
+service: marcopolo
+group: shopping-discovery
+role: [consumer]
+gate:
+  mode: warn
+  warnUntil: 2026-12-01
+  failOn: ERR

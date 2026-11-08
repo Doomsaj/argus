@@ -1,0 +1,63 @@
+stages: [build, test, deploy]
+
+include:
+  - component: git.digikala.com/argus/ci-templates/provider@1.0.0
+    inputs:
+      spec_job: build
+      stage: test
+      pact_verify_image: artifactory.digikala.com/docker/maven:3.9-eclipse-temurin-21
+      pact_verify_command: >-
+        mvn -B -Dtest='*PactVerificationTest' -Dsurefire.failIfNoSpecifiedTests=false
+        -Dpact.provider.version=$PACT_PROVIDER_VERSION
+        -Dpactbroker.url=$PACT_BROKER_BASE_URL
+        -Dpactbroker.auth.username=$PACT_BROKER_USERNAME -Dpactbroker.auth.password=$PACT_BROKER_PASSWORD
+        -Dpact.filter.pacturl=$PACT_URL -Dpact.verifier.publishResults=$ARGUS_PACT_PUBLISH test
+  - component: git.digikala.com/argus/ci-templates/deploy-gate@1.0.0
+    inputs:
+      environment: production
+      deploy_branch: main
+      record_after: deploy-production
+
+variables:
+  MAVEN_OPTS: -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
+
+build:
+  stage: build
+  image: artifactory.digikala.com/docker/maven:3.9-eclipse-temurin-21
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  cache:
+    key: { files: [pom.xml] }
+    paths: [.m2/repository]
+  before_script:
+    - !reference [.argus-credentials, before_script]   # PACT_BROKER_* (RO on MRs) + ARGUS_PACT_PUBLISH
+  script:
+    # spec dump test (GET /v3/api-docs -> target/openapi.json), controller tests that record
+    # samples into target/argus-samples/, and Pact provider verification all run in verify.
+    - >
+      mvn -B verify
+      -Dpact.provider.version=$CI_COMMIT_SHA -Dpact.provider.branch=$CI_COMMIT_REF_NAME
+      -Dpactbroker.url=$PACT_BROKER_BASE_URL
+      -Dpactbroker.auth.username=$PACT_BROKER_USERNAME -Dpactbroker.auth.password=$PACT_BROKER_PASSWORD
+      -Dpact.verifier.publishResults=$ARGUS_PACT_PUBLISH
+  artifacts:
+    when: always
+    paths: [target/openapi.json, target/argus-samples/]
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+
+deploy-production:
+  stage: deploy
+  needs:
+    - build
+    - job: argus-spec-publish
+      optional: true
+    - job: argus-can-i-deploy
+      optional: true          # absent only when ARGUS_SKIP is set
+  rules:
+    - !reference [.argus-rules-skip-verify-only, rules]
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - ./deploy.sh production  # Helm / Argo CD promotion, then wait for healthy rollout
