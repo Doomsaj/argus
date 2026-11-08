@@ -176,10 +176,14 @@ type createArtifact struct {
 }
 
 // CreateVersion creates the artifact on first use and the version otherwise.
-// FIND_OR_CREATE_VERSION makes pipeline retries idempotent: same SHA + same content = no-op.
-// A 409 here means the VALIDITY rule rejected the spec or the SHA exists with other content.
+// Every commit gets its own version, even with unchanged content (FIND_OR_CREATE_VERSION would return
+// the older version instead), and a retried job whose version already exists is a no-op.
+// A 409 here means the VALIDITY rule rejected the spec.
 func (c *Client) CreateVersion(ctx context.Context, group, artifact, version string, spec []byte, labels map[string]string, dryRun bool) error {
-	q := url.Values{"ifExists": {"FIND_OR_CREATE_VERSION"}}
+	if exists, err := c.VersionExists(ctx, group, artifact, version); err != nil || exists {
+		return err
+	}
+	q := url.Values{"ifExists": {"CREATE_VERSION"}}
 	if dryRun {
 		q.Set("dryRun", "true")
 	}

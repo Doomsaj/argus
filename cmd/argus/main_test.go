@@ -156,6 +156,7 @@ func fakeApicurio(t *testing.T) (*httptest.Server, *[]string) {
 	var mu sync.Mutex
 	var calls []string
 	branches := map[string][]string{}
+	created := 0 // versions created; a retry must not create again
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -177,6 +178,7 @@ func fakeApicurio(t *testing.T) (*httptest.Server, *[]string) {
 			if ca.FirstVersion.Version != sha[:12] || ca.FirstVersion.Labels["git.sha"] != sha {
 				t.Errorf("create body: %s", body)
 			}
+			created++
 			fmt.Fprint(w, `{}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, art+"/branches/"):
 			b := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, art+"/branches/"), "/versions")
@@ -196,6 +198,10 @@ func fakeApicurio(t *testing.T) (*httptest.Server, *[]string) {
 		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, art+"/branches/"):
 			http.NotFound(w, r) // branch does not exist yet in this fake
 		case r.Method == "GET" && r.URL.Path == art+"/versions/"+sha[:12]:
+			if created == 0 {
+				http.NotFound(w, r)
+				return
+			}
 			fmt.Fprint(w, `{}`)
 		default:
 			http.NotFound(w, r)
@@ -223,13 +229,16 @@ func TestPublishCanIDeployRecordLocalAuth(t *testing.T) {
 	}
 	joined := strings.Join(*calls, "\n")
 	for _, want := range []string{
-		"POST /groups/catalog/artifacts?ifExists=FIND_OR_CREATE_VERSION",
+		"POST /groups/catalog/artifacts?ifExists=CREATE_VERSION",
 		"POST /groups/catalog/artifacts/product-detail/branches",
 		"GET /groups/catalog/artifacts/product-detail/versions/0123456789ab",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing call %q in\n%s", want, joined)
 		}
+	}
+	if n := strings.Count(joined, "POST /groups/catalog/artifacts?"); n != 1 {
+		t.Errorf("version creations: %d, want 1 (retry is a no-op)\n%s", n, joined)
 	}
 	if n := strings.Count(joined, "POST /groups/catalog/artifacts/product-detail/branches\n"); n != 2 { // main + production
 		t.Errorf("branch creations: %d\n%s", n, joined)

@@ -75,7 +75,7 @@ services:
     depends_on: [apicurio, pact-broker]
     ports: ["127.0.0.1:8000:8000"]
     environment:
-      ARGUS_REGISTRY_USERNAME: argus
+      ARGUS_REGISTRY_USERNAME: registry-ci # not "argus": GitHub masks secret values in every log line
       ARGUS_REGISTRY_PASSWORD_HASH: ${ARGUS_REGISTRY_PASSWORD_HASH:?run ./make-env.sh}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
